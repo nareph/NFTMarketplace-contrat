@@ -1,0 +1,174 @@
+import {
+  time,
+  loadFixture,
+} from "@nomicfoundation/hardhat-toolbox/network-helpers";
+import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
+import { expect } from "chai";
+import hre from "hardhat";
+//import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IERC2981} from "@openzeppelin/contracts/interfaces/IERC2981.sol";
+
+//const IERC721 test721;
+
+describe("NFTMarketplace", function () {
+
+  async function deployNFTMarketplaceFixture() {
+    const [owner, otherAccount, lastAccount] = await hre.ethers.getSigners();
+
+    const Test721 = await hre.ethers.getContractFactory("Test721");
+    const NFTMarketplace = await hre.ethers.getContractFactory("NFTMarketplace");
+    const test721 = await Test721.deploy();
+    const nftMarketplace = await NFTMarketplace.deploy();
+
+    return { nftMarketplace, test721, owner, otherAccount, lastAccount };
+  }
+
+  async function deployAndListNFTFixture() {
+    const { nftMarketplace, test721, owner, otherAccount, lastAccount } = await loadFixture(deployNFTMarketplaceFixture);
+
+    const tokenId = 10
+    const nftContract = test721.target
+    const marketplaceAddress = nftMarketplace.target
+    const listPrice = await nftMarketplace.getListPrice()
+    const price = 300
+    //const currentlyListed = true
+
+    await test721.mint(otherAccount, tokenId)
+    await test721.connect(otherAccount).approve(nftMarketplace.target, tokenId)
+    const listNFTResult = await nftMarketplace.connect(otherAccount).createListedNFT(test721.target, tokenId, price, { value: listPrice })
+
+
+    return { nftMarketplace, test721, listNFTResult, tokenId, listPrice, price, owner, otherAccount, lastAccount };
+  }
+
+  describe("Deployment", function () {
+
+    it("Should set the right owner", async function () {
+      const { nftMarketplace, owner } = await loadFixture(deployNFTMarketplaceFixture);
+
+      expect(await nftMarketplace.owner()).to.equal(owner.address);
+    });
+  });
+
+    describe('UpdateListPrice', function () {
+      it('Should be reverted because the caller is not owner', async function () {
+        const { nftMarketplace, otherAccount } = await loadFixture(deployNFTMarketplaceFixture);
+        const expectedValue = 5
+        await expect(
+          nftMarketplace.connect(otherAccount).updateListPrice(expectedValue),
+        ).to.be.revertedWith('Only owner can update listing price')
+      })
+
+      it('Should should set updateListPrice by owner', async function () {
+        const expectedValue = 5
+        const { nftMarketplace, owner } = await loadFixture(deployNFTMarketplaceFixture);
+
+        await nftMarketplace.connect(owner).updateListPrice(expectedValue)
+
+        expect(await nftMarketplace.getListPrice()).to.equal(expectedValue)
+      })
+    })
+
+  describe("List On NFTMarketplace", function () {
+    describe("Validations", function () {
+      it("Should set the right Price parameter", async function () {
+        const { nftMarketplace, test721 } = await loadFixture(deployNFTMarketplaceFixture);
+
+        await expect(nftMarketplace.createListedNFT(test721.target, 0, 0)).to.be.revertedWith(
+          "Price must be at least 1 wei"
+        );
+      });
+
+      it('Should be reverted because the caller do not sent correct fund', async function () {
+        const { nftMarketplace, test721 } = await loadFixture(deployNFTMarketplaceFixture);
+
+        await expect(nftMarketplace.createListedNFT(test721.target, 0, 1, { value: 1 })).to.be.revertedWith(
+          "Price must be equal to listing price"
+        );
+      });
+
+    });
+
+    describe("List NFT", function () {
+        it('Should be listed nft with good parameters and marketplace receive listPrice', async function () {
+          const { nftMarketplace, test721, listNFTResult, tokenId, listPrice, price, otherAccount } = await loadFixture(deployAndListNFTFixture);
+
+          expect (listNFTResult
+          ).to.changeEtherBalances([nftMarketplace, otherAccount],[listPrice, -listPrice]);
+
+          expect(await test721.ownerOf(tokenId)).to.equal(nftMarketplace.target)
+
+          const listedNFT = await nftMarketplace.getListedNFTForId(tokenId)
+
+          expect(listedNFT.nftContract).to.equal(test721.target)
+          expect(listedNFT.tokenId).to.equal(tokenId)
+          expect(listedNFT.owner).to.equal(nftMarketplace.target)
+          expect(listedNFT.seller).to.equal(otherAccount.address)
+          expect(listedNFT.price).to.equal(price)
+          expect(listedNFT.currentlyListed).to.equal(true)
+        });
+    });
+
+    describe("Events", function () {
+        it("Should emit NFTListedSuccess events", async function () {
+          const { nftMarketplace, test721, listNFTResult, tokenId, price, otherAccount } = await loadFixture(deployAndListNFTFixture);
+
+          expect(listNFTResult)
+            .to.emit(nftMarketplace, "NFTListedSuccess")
+            .withArgs(test721.target, tokenId, nftMarketplace.target, otherAccount.address, price, true);
+        });
+    });
+  });
+  describe("Buy On NFTMarketplace", function () {
+    describe("Validations", function () {
+      it('Should be reverted because the caller do not send correct fund', async function () {
+        const { nftMarketplace, test721, price, tokenId } = await loadFixture(deployAndListNFTFixture);
+        const badPrice = price + 1;
+        await expect(nftMarketplace.executeSale(test721.target, tokenId, { value: badPrice })).to.be.revertedWith(
+          "Please submit the asking price in order to complete the purchase"
+        );
+      });
+    });
+
+    describe("Buy NFT", function () {
+      it('Should be purchase nft and royaltyRecipient will receive RoyaltyAmount and the seller (price - royaltyAmount). ', async function () {
+         const
+         { nftMarketplace, test721, listNFTResult, tokenId, listPrice, price, owner, otherAccount, lastAccount } =
+                                                                                                                   await loadFixture(deployAndListNFTFixture);
+         const royaltyInfo = await test721.royaltyInfo(tokenId, price)
+         const royaltyAmount = royaltyInfo[1];
+         const amountWithoutRoyalty = price - Number(royaltyAmount)
+
+         await expect(nftMarketplace.connect(lastAccount).executeSale(test721.target, tokenId, { value: price }))
+                .to.changeEtherBalances([royaltyInfo[0], otherAccount, lastAccount],[royaltyAmount, amountWithoutRoyalty, -price]);
+
+          expect(await test721.ownerOf(tokenId)).to.equal(lastAccount.address)
+
+          const listedNFT = await nftMarketplace.getListedNFTForId(tokenId)
+
+          expect(listedNFT.nftContract).to.equal(test721.target)
+          expect(listedNFT.tokenId).to.equal(tokenId)
+          expect(listedNFT.owner).to.equal(nftMarketplace.target)
+          expect(listedNFT.seller).to.equal(lastAccount.address)
+          expect(listedNFT.price).to.equal(price)
+          expect(listedNFT.currentlyListed).to.equal(false)
+
+      });
+
+    });
+
+    describe("Events", function () {
+      it("Should emit NFTListedSuccess events", async function () {
+        const { nftMarketplace, test721, price, tokenId, owner } = await loadFixture(deployAndListNFTFixture);
+
+        await expect(nftMarketplace.executeSale(test721.target, tokenId, { value: price }))
+          .to.emit(nftMarketplace, "NFTListedSuccess")
+          .withArgs(test721.target, tokenId, nftMarketplace.target, owner.address, price, false);
+
+      });
+
+    });
+  });
+
+
+});
