@@ -1,14 +1,9 @@
 import {
-  time,
   loadFixture,
 } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { expect } from "chai";
 import hre from "hardhat";
-//import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import {IERC2981} from "@openzeppelin/contracts/interfaces/IERC2981.sol";
-
-//const IERC721 test721;
 
 describe("NFTMarketplace", function () {
 
@@ -59,7 +54,7 @@ describe("NFTMarketplace", function () {
         ).to.be.revertedWith('Only owner can update listing price')
       })
 
-      it('Should should set updateListPrice by owner', async function () {
+      it('Should set updateListPrice by owner', async function () {
         const expectedValue = 5
         const { nftMarketplace, owner } = await loadFixture(deployNFTMarketplaceFixture);
 
@@ -170,5 +165,30 @@ describe("NFTMarketplace", function () {
     });
   });
 
+    describe("Withdraw marketplace fee", function () {
+      describe("Validations", function () {
+        it('Should be reverted because the caller is not owner', async function () {
+          const { nftMarketplace, otherAccount } = await loadFixture(deployNFTMarketplaceFixture);
+
+          await expect(nftMarketplace.connect(otherAccount).withdraw()).to.be.revertedWith(
+            "Only owner can withdraw"
+          );
+        });
+
+      });
+
+      describe("Withdraw", function () {
+        it('Should withdraw by owner', async function () {
+          const { nftMarketplace, owner } = await loadFixture(deployNFTMarketplaceFixture);
+
+          const contractBalance = await hre.ethers.provider.getBalance(nftMarketplace.target);
+
+          expect (nftMarketplace.connect(owner).withdraw()
+          ).to.changeEtherBalances([nftMarketplace, owner],[-contractBalance, contractBalance]);
+
+        });
+
+      });
+    });
 
 });

@@ -5,14 +5,12 @@ import "hardhat/console.sol";
 import {IERC2981} from "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-//import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
 contract NFTMarketplace is ReentrancyGuard {
     address payable public owner;
     //The fee charged by the marketplace to be allowed to list an NFT
     uint256 listPrice = 0.01 ether;
-    uint16 platformFee = 1000; // max fee or discount is 10%
-    
+
     bytes4 private constant _INTERFACE_ID_ERC2981 = 0x2a55205a;
 
     struct ListedNFT {
@@ -107,6 +105,16 @@ contract NFTMarketplace is ReentrancyGuard {
             price,
             false
         );
+    }
+
+    /**
+      * @notice Allow withdrawing funds
+     */
+    function withdraw() external {
+        require(owner == msg.sender, "Only owner can withdraw");
+        uint256 balance = address(this).balance;
+        (bool success,)=payable(msg.sender).call{value:balance}("");
+        require(success, "Transfer failed!");
     }
 
     /**
