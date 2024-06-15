@@ -5,11 +5,17 @@ import "hardhat/console.sol";
 import {IERC2981} from "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
+/**
+ * @title NFT Marketplace
+ * @author Nareph
+ * @notice
+ */
 contract NFTMarketplace is ReentrancyGuard {
     address payable public owner;
     //The fee charged by the marketplace to be allowed to list an NFT
-    uint256 listPrice = 0.01 ether;
+    uint256 listPrice = 0.001 ether;
 
     bytes4 private constant _INTERFACE_ID_ERC2981 = 0x2a55205a;
 
@@ -22,7 +28,7 @@ contract NFTMarketplace is ReentrancyGuard {
         bool currentlyListed;
     }
 
-    event NFTListedSuccess (
+    event NFTListedSuccess(
         address indexed nftContract,
         uint256 indexed tokenId,
         address owner,
@@ -31,7 +37,26 @@ contract NFTMarketplace is ReentrancyGuard {
         bool currentlyListed
     );
 
-    mapping(uint256 => ListedNFT) private idToListedNFT;
+    event NFTDeListSuccess(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address owner
+    );
+
+    event UpdateListNFTPrice(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        uint256 newPrice
+    );
+
+    event NFTSale(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address buyer,
+        uint256 price
+    );
+
+    mapping(string => ListedNFT) private idToListedNFT;
 
     constructor() {
         owner = payable(msg.sender);
@@ -46,16 +71,32 @@ contract NFTMarketplace is ReentrancyGuard {
         return listPrice;
     }
 
-    function getListedNFTForId(uint256 tokenId) public view returns (ListedNFT memory) {
-        return idToListedNFT[tokenId];
+    function getListedNFTForId(
+        address nftContract,
+        uint256 tokenId
+    ) public view returns (ListedNFT memory) {
+        string memory id = string.concat(
+            Strings.toHexString(nftContract),
+            Strings.toString(tokenId)
+        );
+        return idToListedNFT[id];
     }
 
     /* Places nfts for sale on the marketplace */
-    function createListedNFT(address nftContract, uint256 tokenId, uint256 price) public payable nonReentrant {
+    function createListedNFT(
+        address nftContract,
+        uint256 tokenId,
+        uint256 price
+    ) public payable nonReentrant {
         require(price > 0, "Price must be at least 1 wei");
         require(msg.value == listPrice, "Price must be equal to listing price");
 
-        idToListedNFT[tokenId] = ListedNFT(
+        string memory id = string.concat(
+            Strings.toHexString(nftContract),
+            Strings.toString(tokenId)
+        );
+
+        idToListedNFT[id] = ListedNFT(
             nftContract,
             tokenId,
             payable(address(this)),
@@ -76,67 +117,128 @@ contract NFTMarketplace is ReentrancyGuard {
         );
     }
 
-    function executeSale(address nftContract, uint256 tokenId) public payable nonReentrant {
-        uint price = idToListedNFT[tokenId].price;
-        address seller = idToListedNFT[tokenId].seller;
-        require(msg.value == price, "Please submit the asking price in order to complete the purchase");
+    /* remove nft for sale on the marketplace */
+    function deListNFT(
+        address nftContract,
+        uint256 tokenId
+    ) public nonReentrant {
+        string memory id = string.concat(
+            Strings.toHexString(nftContract),
+            Strings.toString(tokenId)
+        );
+        require(idToListedNFT[id].currentlyListed == true, "nft is not listed");
 
-        idToListedNFT[tokenId].currentlyListed = false;
-        idToListedNFT[tokenId].seller = payable(msg.sender);
+        require(
+            msg.sender == idToListedNFT[id].seller,
+            "Only Owner of NFT can de-list"
+        );
+
+        idToListedNFT[id].currentlyListed = false;
+        idToListedNFT[id].owner = payable(msg.sender);
+        idToListedNFT[id].seller = payable(address(0));
+
+        IERC721(nftContract).transferFrom(address(this), msg.sender, tokenId);
+
+        emit NFTDeListSuccess(nftContract, tokenId, msg.sender);
+    }
+
+    /* update nft price*/
+    function updateListNFTPrice(
+        address nftContract,
+        uint256 tokenId,
+        uint256 newPrice
+    ) public nonReentrant {
+        string memory id = string.concat(
+            Strings.toHexString(nftContract),
+            Strings.toString(tokenId)
+        );
+
+        require(idToListedNFT[id].currentlyListed == true, "nft is not listed");
+
+        require(
+            msg.sender == idToListedNFT[id].seller,
+            "Only Owner of NFT can update its price"
+        );
+
+        idToListedNFT[id].price = newPrice;
+
+        emit UpdateListNFTPrice(nftContract, tokenId, newPrice);
+    }
+
+    function executeSale(
+        address nftContract,
+        uint256 tokenId
+    ) public payable nonReentrant {
+        string memory id = string.concat(
+            Strings.toHexString(nftContract),
+            Strings.toString(tokenId)
+        );
+
+        uint price = idToListedNFT[id].price;
+        address seller = idToListedNFT[id].seller;
+        require(
+            msg.value == price,
+            "Please submit the asking price in order to complete the purchase"
+        );
+
+        idToListedNFT[id].currentlyListed = false;
+        idToListedNFT[id].owner = payable(msg.sender);
+        idToListedNFT[id].seller = payable(address(0));
 
         IERC721(nftContract).transferFrom(address(this), msg.sender, tokenId);
 
         // Compute royalties
-        (address payable royaltyRecipient, uint256 royaltyAmount) = _calculateRoyalties(nftContract, tokenId, price);
+        (
+            address payable royaltyRecipient,
+            uint256 royaltyAmount
+        ) = _calculateRoyalties(nftContract, tokenId, price);
 
         // Transfer royalties
-        if(royaltyAmount != 0){
+        if (royaltyAmount != 0) {
             royaltyRecipient.transfer(royaltyAmount);
         }
 
         //Transfer the proceeds from the sale to the seller of the NFT
         payable(seller).transfer(price - royaltyAmount);
 
-        emit NFTListedSuccess(
-            nftContract,
-            tokenId,
-            address(this),
-            msg.sender,
-            price,
-            false
-        );
+        emit NFTSale(nftContract, tokenId, address(msg.sender), price);
     }
 
     /**
-      * @notice Allow withdrawing funds
+     * @notice Allow withdrawing funds
      */
     function withdraw() external {
         require(owner == msg.sender, "Only owner can withdraw");
         uint256 balance = address(this).balance;
-        (bool success,)=payable(msg.sender).call{value:balance}("");
+        (bool success, ) = payable(msg.sender).call{value: balance}("");
         require(success, "Transfer failed!");
     }
 
     /**
-      * Royalty support functions
-      */
-    function _calculateRoyalties(address nftContract, uint256 tokenId, uint256 saleAmount)
-    internal
-    returns (address payable royaltyRecipient, uint256 royaltyAmount)
+     * Royalty support functions
+     */
+    function _calculateRoyalties(
+        address nftContract,
+        uint256 tokenId,
+        uint256 saleAmount
+    )
+        internal
+        view
+        returns (address payable royaltyRecipient, uint256 royaltyAmount)
     {
-        if(_checkRoyalties(nftContract)){
-            (address recipient, uint256 amount) =
-            IERC2981(nftContract).royaltyInfo(tokenId, saleAmount);
+        if (_checkRoyalties(nftContract)) {
+            (address recipient, uint256 amount) = IERC2981(nftContract)
+                .royaltyInfo(tokenId, saleAmount);
             return (payable(recipient), amount);
-        }
-        else {
+        } else {
             return (payable(0), 0);
         }
     }
 
     function _checkRoyalties(address _contract) internal view returns (bool) {
-        (bool success) = IERC2981(_contract).supportsInterface(_INTERFACE_ID_ERC2981);
+        bool success = IERC2981(_contract).supportsInterface(
+            _INTERFACE_ID_ERC2981
+        );
         return success;
     }
-
 }
